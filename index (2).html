@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galadriel Agent Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>Galadriel Agent Dashboard</h1>
+    <div id="networkStatus"></div>
+    <button id="connectWallet" class="btn">Connect Wallet</button>
+    <div class="dashboard">
+        <div class="agent-list" id="agentList"></div>
+        <div class="chat-area">
+            <div class="chat-messages" id="chatMessages"></div>
+            <input type="number" id="actorIdInput" placeholder="Enter Actor ID">
+            <input type="text" id="messageInput" placeholder="Type a message...">
+            <button id="sendButton" class="btn">Send</button>
+    <div id="createAgentForm">
+        <h2>Create New Agent</h2>
+        <input type="text" id="newAgentName" placeholder="Agent Name">
+        <input type="text" id="newAgentType" placeholder="Agent Type">
+        <button id="submitNewAgent">Create Agent</button>
+    </div>
+        </div>
+        <div class="message-history-area">
+            <h2>Message History</h2>
+            <input type="number" id="historyActorId" placeholder="Enter Actor ID">
+            <button id="fetchMessageHistoryButton" class="btn">Fetch Message History</button>
+            <div id="messageHistoryArea"></div>
+        </div>
+    </div>
+    <script src="https://cdn.ethers.io/lib/ethers-5.0.umd.min.js"></script>
+    <script src="constants.js"></script>
+    <script>
+        let selectedAgent = null;
+        let provider, signer, contract;
+        const EXPECTED_CHAIN_ID = 696969; // Galadriel
+
+        async function connectWallet() {
+            try {
+                await provider.send('eth_requestAccounts', []);
+                signer = provider.getSigner();
+                const network = await provider.getNetwork();
+                if (network.chainId !== EXPECTED_CHAIN_ID) {
+                    alert(`Please connect to the correct network. Expected chain ID: ${EXPECTED_CHAIN_ID}`);
+                    return false;
+                }
+                document.getElementById('connectWallet').style.display = 'none';
+                document.getElementById('networkStatus').textContent = 'Connected to Galadriel';
+                return true;
+            } catch (error) {
+                console.error('Failed to connect wallet:', error);
+                alert('Failed to connect wallet. Make sure you have MetaMask installed and unlocked.');
+                return false;
+            }
+        }
+async function getMessageHistory(actorId) {
+    try {
+        /*TODO
+Galadriel connection established and contract loaded
+index.html:62 Raw message history: 
+This is the expected output from getMessageHistory
+Array(2)
+0
+: 
+(2) ['user', Array(1), role: 'user', content: Array(1)]
+1
+: 
+(2) ['assistant', Array(1), role: 'assistant', content: Array(1)]
+length
+: 
+2
+[[Prototype]]
+: 
+Array(0)
+        */
+        const messageHistory = await contract.getMessageHistory(actorId);
+        let beans = messageHistory[0].content[0].value;
+        let response = messageHistory[1].content[0].value;
+        let newbeans = beans.split("You are an actor. You can message other actors, create new actors, and introspect. To perform one of these tasks, you will need to respond with the |COMMAND| then the command (introspect, message, create) inside of | delimiters. What you want to change your subjective context to will need to follow introspect, to message you need to have the ID of the actor to message in another | and then the message. The ID is always an integer less than the actor count. To create you need to follor |create| with the core purpose as well as an initial context each in their own |. Your limit on messages is 5 and creation of actors is 2. Your core purpose is:");
+        beans = newbeans[1] + "<br><br>" + response;
+        console.log('Raw message history:', messageHistory); // Log raw data for debugging
+        return messageHistory.map(msg => {
+            const sender = "Sent Message and Resposne:";
+            const message = beans;
+            let timestamp = 'Unknown time';
+            
+            if (msg.timestamp && typeof msg.timestamp.toNumber === 'function') {
+                timestamp = new Date(msg.timestamp.toNumber() * 1000).toLocaleString();
+            }
+
+            return { sender, message, timestamp };
+        });
+    } catch (error) {
+        console.error('Error fetching message history:', error);
+        return [];
+    }
+}
+async function displayMessageHistory() {
+    const actorIdInput = document.getElementById('historyActorId');
+    const actorId = parseInt(actorIdInput.value.trim());
+
+    if (isNaN(actorId)) {
+        alert('Please enter a valid Actor ID.');
+        return;
+    }
+
+    try {
+        const messageHistory = await getMessageHistory(actorId);
+        const historyArea = document.getElementById('messageHistoryArea');
+        
+        if (messageHistory.length === 0) {
+            historyArea.innerHTML = '<p>No message history found for this actor.</p>';
+            return;
+        }
+
+        const historyHtml = messageHistory.map(msg => `
+            <div class="history-message">
+                <span class="sender">${msg.sender}</span>
+                <span class="timestamp">${msg.timestamp}</span>
+                <p class="message">${msg.message}</p>
+            </div>
+        `).join('');
+
+        historyArea.innerHTML = historyHtml;
+    } catch (error) {
+        console.error('Error displaying message history:', error);
+        document.getElementById('messageHistoryArea').innerHTML = '<p>Error fetching message history. Please try again.</p>';
+    }
+}
+
+// Add this event listener with your other event listeners
+document.getElementById('fetchMessageHistoryButton').addEventListener('click', displayMessageHistory);
+async function fetchAgents() {
+    try {
+        const agentCount = await contract.actorCount();
+        const agents = [];
+        for (let i = 0; i < agentCount; i++) {
+            const actor = await contract.getActorInfo(i);
+            agents.push({
+                id: i,
+                system: actor.system,
+                context: actor.context,
+                agentLimit: actor.agentLimit.toNumber(),
+                messageLimit: actor.messageLimit.toNumber(),
+                chatIds: actor.chatIds.map(id => id.toNumber())
+            });
+        }
+        return agents;
+    } catch (error) {
+        console.error('Error fetching agents:', error);
+        return [];
+    }
+}
+
+async function renderAgents() {
+    const agents = await fetchAgents();
+    const agentList = document.getElementById('agentList');
+    agentList.innerHTML = agents.map(agent => `
+        <div class="agent" data-id="${agent.id}">
+            <h3>Agent ${agent.id}</h3>
+            <p>System: ${agent.system}</p>
+            <p>Context: ${agent.context}</p>
+            <p>Agent Limit: ${agent.agentLimit}</p>
+            <p>Message Limit: ${agent.messageLimit}</p>
+            <p>Chat IDs: ${agent.chatIds.join(', ')}</p>
+        </div>
+    `).join('');
+
+    agentList.querySelectorAll('.agent').forEach(agentElement => {
+        agentElement.addEventListener('click', () => selectAgent(parseInt(agentElement.dataset.id)));
+    });
+}
+
+function selectAgent(agentId) {
+    selectedAgent = agents.find(agent => agent.id === agentId);
+    document.querySelectorAll('.agent').forEach(el => el.classList.remove('selected'));
+    document.querySelector(`.agent[data-id="${agentId}"]`).classList.add('selected');
+    document.getElementById('chatMessages').innerHTML = '';
+}
+        function addMessage(sender, message) {
+            const chatMessages = document.getElementById('chatMessages');
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message', sender === 'User' ? 'user-message' : 'agent-message');
+            messageElement.textContent = `${sender}: ${message}`;
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+async function sendMessage() {
+    const actorIdInput = document.getElementById('actorIdInput');
+    const actorId = parseInt(actorIdInput.value.trim());
+
+    if (isNaN(actorId)) {
+        alert('Please enter a valid Actor ID.');
+        return;
+    }
+
+    const messageInput = document.getElementById('messageInput');
+    const message = messageInput.value.trim();
+    
+    if (message) {
+        addMessage('User', message);
+        messageInput.value = '';
+
+        try {
+            const tx = await contract.messageAgent(actorId, message);
+            console.log('Transaction sent:', tx.hash);
+            await tx.wait();
+            console.log('Transaction confirmed');
+
+            // Replace this with actual contract event listening
+            setTimeout(() => {
+                addMessage(`Actor ${actorId}`, `Response from Actor ${actorId}`);
+            }, 1000);
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error sending message. Check console for details.');
+        }
+    }
+}
+
+// Event listeners
+document.getElementById('sendButton').addEventListener('click', sendMessage);
+document.getElementById('messageInput').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') sendMessage();
+});
+async function createNewAgent() {
+    const nameInput = document.getElementById('newAgentName');
+    const typeInput = document.getElementById('newAgentType');
+    const name = nameInput.value.trim();
+    const type = typeInput.value.trim();
+
+    if (!name || !type) {
+        alert('Please enter both a name and a type for the new agent.');
+        return;
+    }
+
+    try {
+        // Show loading indicator
+        document.getElementById('submitNewAgent').disabled = true;
+        document.getElementById('submitNewAgent').textContent = 'Creating...';
+
+        // Call the smart contract function to create a new agent
+        const tx = await contract.createActor(name, type);
+        console.log('Transaction sent:', tx.hash);
+
+        // Wait for the transaction to be mined
+        const receipt = await tx.wait();
+        console.log('Transaction confirmed:', receipt.transactionHash);
+
+        // Clear the input fields
+        nameInput.value = '';
+        typeInput.value = '';
+
+        // Refresh the agent list
+        await renderAgents();
+
+        // Show success message
+        alert('New agent created successfully!');
+    } catch (error) {
+        console.error('Error creating new agent:', error);
+        alert('Failed to create new agent. Please check the console for details.');
+    } finally {
+        // Reset the button state
+        document.getElementById('submitNewAgent').disabled = false;
+        document.getElementById('submitNewAgent').textContent = 'Create Agent';
+    }
+}
+
+document.getElementById('connectWallet').addEventListener('click', async () => {
+    if (await connectWallet()) {
+        init();
+    }
+});
+document.getElementById('sendButton').addEventListener('click', sendMessage);
+document.getElementById('messageInput').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') sendMessage();
+});
+document.getElementById('submitNewAgent').addEventListener('click', createNewAgent);
+document.getElementById('newAgentName').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        createNewAgent();
+    }
+});
+
+async function init() {
+    try {
+        contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+        await renderAgents();
+        console.log('Galadriel connection established and contract loaded');
+    } catch (error) {
+        console.error('Failed to initialize:', error);
+        alert('Failed to initialize. Check console for details.');
+    }
+}
+
+provider = new ethers.providers.Web3Provider(window.ethereum);
+provider.on("network", (newNetwork, oldNetwork) => {
+    if (oldNetwork) {
+        window.location.reload();
+    }
+});
+
+// Initial setup
+if (window.ethereum.isConnected()) {
+    connectWallet().then(connected => {
+        if (connected) init();
+    });
+}
+    </script>
+</body>
+</html>
