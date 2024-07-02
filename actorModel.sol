@@ -3,11 +3,11 @@ pragma solidity ^0.8.9;
 
 // Uncomment this line to use console.log
 // import "hardhat/console.sol";
-import "../IOracle.sol";
+import "./IOracle.sol";
 
-// @title ChatGpt
+// @title AnthropicChatGptSwarm
 // @notice This contract interacts with teeML oracle to handle chat interactions using the Anthropic model.
-contract AnthropicChatGpt {
+contract AnthropicChatGptSwarm {
 
     struct ChatRun {
         address owner;
@@ -105,9 +105,14 @@ contract AnthropicChatGpt {
 
         return currentId;
     }
+    // Limits to how many actors and messages an actor can create/send are a feature of the Actor Model
     uint public ACTOR_LIMIT = 2;
     uint public MESSAGE_LIMIT = 5;
-    // Updated onOracleLlmResponse function
+    // @notice Response to oracle LLM callback function
+    // @param runId the runId of the chat instance. 
+    // @param the reponse of the Oracle
+    // @param the error message, if there is one otherwise it will be ""
+    // @return The ID of the newly created chat
     function onOracleLlmResponse(
         uint runId,
         IOracle.LlmResponse memory response,
@@ -118,7 +123,7 @@ contract AnthropicChatGpt {
             keccak256(abi.encodePacked(run.messages[run.messagesCount - 1].role)) == keccak256(abi.encodePacked("user")),
             "No message to respond to"
         );
-
+        // make sure error message not there.
         if (!compareStrings(errorMessage, "")) {
             IOracle.Message memory newMessage = IOracle.Message({
                 role: "assistant",
@@ -129,12 +134,13 @@ contract AnthropicChatGpt {
             run.messages.push(newMessage);
             run.messagesCount++;
         } else {
+            // check if there's a function call
             if (!compareStrings(response.functionName, "")) {
                 toolRunning[runId] = response.functionName;
                 IOracle(oracleAddress).createFunctionCall(runId, response.functionName, response.functionArguments);
             } else {
                 toolRunning[runId] = "";
-                // Check for command in the response
+                // Check for command in the response, and execute command. I tried to call fucntion introspect, messageAgent in here but it made the oracle not return. 
                 string[] memory lines = splitMessage(response.content, "|");
                 for (uint i = 0; i < lines.length; i++) {
 
@@ -180,43 +186,8 @@ contract AnthropicChatGpt {
         }
     }
 
-    function stringToUint(string memory s) public pure returns (uint) {
-        bytes memory b = bytes(s);
-        uint result = 0;
-        for (uint i = 0; i < b.length; i++) {
-            uint c = uint(uint8(b[i]));
-            if (c >= 48 && c <= 57) {
-                result = result * 10 + (c - 48);
-            }
-        }
-        return result;
-    }
-    function uintToString(uint _i) public pure returns (string memory) {
-        if (_i == 0) {
-            return "0";
-        }
-        uint j = _i;
-        uint len;
-        while (j != 0) {
-            len++;
-            j /= 10;
-        }
-        bytes memory bstr = new bytes(len);
-        uint k = len;
-        while (_i != 0) {
-            k = k-1;
-            uint8 temp = (48 + uint8(_i - _i / 10 * 10));
-            bytes1 b1 = bytes1(temp);
-            bstr[k] = b1;
-            _i /= 10;
-        }
-        return string(bstr);
-    }
-    function startsWith(string memory str, string memory prefix) private pure returns (bool) {
-        return bytes(str).length >= bytes(prefix).length &&
-            keccak256(abi.encodePacked(substring(str, 0, bytes(prefix).length))) == keccak256(abi.encodePacked(prefix));
-    }
-
+    // affiliates a run to an actor
+    // TODO: just make this mapping public 
     mapping (uint => uint) runIdToActor;
     function getActorIdFromRunId(uint id) public view returns (uint){
         return runIdToActor[id];
@@ -336,7 +307,10 @@ contract AnthropicChatGpt {
     function compareStrings(string memory a, string memory b) private pure returns (bool) {
         return (keccak256(abi.encodePacked((a))) == keccak256(abi.encodePacked((b))));
     }
+    // This is the first thing any instance of the chat sees. 
     string public initialization = "You are an actor. You can message other actors, create new actors, and introspect. To perform one of these tasks, you will need to respond with the |COMMAND| then the command (introspect, message, create) inside of | delimiters. What you want to change your subjective context to will need to follow introspect, to message you need to have the ID of the actor to message in another | and then the message. Realize if you are an agent and you want to reply to another agent, you will need to contain your reply within a message command. The ID is always an integer less than the actor count. To create you need to follor |create| with the core purpose as well as an initial context each in their own |. Your limit on messages is 5 and creation of actors is 2. Your core purpose is:";
+    // Actors are based on the ACE Framework https://github.com/daveshap/ACE_Framework and the Actor Model.
+    // TODO: add a private context and a public context, and have actors share their public context with each other
     struct Actor {
         string system;
         string context;
@@ -346,6 +320,10 @@ contract AnthropicChatGpt {
     }
     mapping(uint => Actor) public actors;
     uint public actorCount;
+    // @notice messageAgent This is how you message an agent of a given ID
+    // @param actorId the ID of the actor to be messaged
+    // @param message the message you want to send to the agent
+    // @return uint the chatId that the message takes
     function messageAgent(uint actorId, string memory message) public returns (uint) {
         Actor storage actor = actors[actorId];
         string memory initialMessage = string(abi.encodePacked(
@@ -360,6 +338,10 @@ contract AnthropicChatGpt {
         actor.chatIds.push(chatId);
         return chatId;
     }
+    // @notice createActor This is how you create an actor
+    // @param system The constant system prompt the actor has
+    // @param initialContext the original context of the actors behavior
+    // @return uint the actorId that is created
     function createActor(string memory system, string memory initialContext) public returns (uint) {
         uint actorId = actorCount++;
         actors[actorId] = Actor({
@@ -373,10 +355,14 @@ contract AnthropicChatGpt {
         return actorId;
     }
 
-
+    // @notice getActor gets the actor Info about a given actor ID
+    // @param actorId the ID of the actor to be queried
+    // @return an array of the actor information
     function getActorInfo(uint actorId) public view returns (Actor memory) {
         return actors[actorId];
     }
+    // @notice getAllActorInfo Gets all the actor info
+    // @return an array of all the actor information
     function getAllActorInfo() public view returns (Actor[] memory) {
         Actor[] memory allActors = new Actor[](actorCount);
         for (uint i = 0; i < actorCount; i++) {
@@ -384,7 +370,10 @@ contract AnthropicChatGpt {
         }
         return allActors;
     }
-
+    // @notice splitMessage Utility function to split a message by a given delimiter
+    // @param message the message to be split up by a given string
+    // @param delimiter the chars want to be split by 
+    // @return An array of the strings that are the result of the string getting split.
     function splitMessage(string memory message, string memory delimiter) public pure returns (string[] memory) {
         uint count = 1;
         for (uint i = 0; i < bytes(message).length; i++) {
@@ -408,7 +397,11 @@ contract AnthropicChatGpt {
         result[partCount] = substring(message, lastIndex, bytes(message).length);
         return result;
     }
-
+    // @notice substring Utility function to turn a string to a uint
+    // @param str The string to be split up
+    // @param the first count of the start of the string
+    // @param endIndex The last count of the length of the string
+    // @return the substring to return
     function substring(string memory str, uint startIndex, uint endIndex) private pure returns (string memory) {
         bytes memory strBytes = bytes(str);
         bytes memory result = new bytes(endIndex - startIndex);
@@ -418,6 +411,53 @@ contract AnthropicChatGpt {
         return string(result);
     }
 
+    // @notice stringToUint Utility function to turn a string to a uint
+    // @param s the string to be turned into a uint
+    // @return The uint to return
+    function stringToUint(string memory s) public pure returns (uint) {
+        bytes memory b = bytes(s);
+        uint result = 0;
+        for (uint i = 0; i < b.length; i++) {
+            uint c = uint(uint8(b[i]));
+            if (c >= 48 && c <= 57) {
+                result = result * 10 + (c - 48);
+            }
+        }
+        return result;
+    }
+    // @notice uintToString Utility function to turn a uint to a string
+    // @param s the uint to be turned into a string
+    // @return The string to return
+    function uintToString(uint _i) public pure returns (string memory) {
+        if (_i == 0) {
+            return "0";
+        }
+        uint j = _i;
+        uint len;
+        while (j != 0) {
+            len++;
+            j /= 10;
+        }
+        bytes memory bstr = new bytes(len);
+        uint k = len;
+        while (_i != 0) {
+            k = k-1;
+            uint8 temp = (48 + uint8(_i - _i / 10 * 10));
+            bytes1 b1 = bytes1(temp);
+            bstr[k] = b1;
+            _i /= 10;
+        }
+        return string(bstr);
+    }
+
+    // @notice startsWith do string equivalence
+    // @param str the longer string if one is longer
+    // @param prefix the shorter string if one is longer
+    // @return True or False are the strings the same? but its technically a startsWith function
+    function startsWith(string memory str, string memory prefix) private pure returns (bool) {
+        return bytes(str).length >= bytes(prefix).length &&
+            keccak256(abi.encodePacked(substring(str, 0, bytes(prefix).length))) == keccak256(abi.encodePacked(prefix));
+    }
 
 
 }
